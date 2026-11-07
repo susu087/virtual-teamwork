@@ -1,0 +1,1165 @@
+"use strict";
+
+(() => {
+  const YEARS = Array.from({ length: 20 }, (_, index) => 2005 + index);
+  const YEAR_MIN = YEARS[0];
+  const YEAR_MAX = YEARS[YEARS.length - 1];
+  const ALL_REGION = "All";
+  const REGION_COLORS = {
+    Africa: "#477fa6",
+    Asia: "#df8859",
+    Europe: "#ca6574",
+    "North America": "#4c9c96",
+    Oceania: "#7a9c62",
+    "South America": "#b39349",
+    Unknown: "#8c9292",
+  };
+  const PATHWAY_COLORS = {
+    decoupling: [30, 133, 119],
+    growth: [221, 137, 83],
+    contraction: [91, 131, 151],
+    reverse: [159, 105, 127],
+    unknown: [220, 228, 230],
+  };
+  const CHART_CONFIG = {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"],
+    toImageButtonOptions: { format: "png", scale: 2 },
+  };
+  const BASE_LAYOUT = {
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    font: { family: "DM Sans, Segoe UI, sans-serif", size: 10, color: "#506771" },
+    margin: { t: 35, r: 18, b: 48, l: 56 },
+    hoverlabel: { bgcolor: "#173642", font: { color: "#ffffff", size: 11 } },
+    legend: { orientation: "h", y: -0.22, font: { size: 9 } },
+    xaxis: { gridcolor: "#edf1f1", zerolinecolor: "#bccaca", automargin: true },
+    yaxis: { gridcolor: "#edf1f1", zerolinecolor: "#bccaca", automargin: true },
+  };
+
+  const state = {
+    year: YEAR_MAX,
+    region: ALL_REGION,
+    focusIso: "CHN",
+    compareIso: "USA",
+    windowYears: 20,
+    logGdp: false,
+    matrixRegion: ALL_REGION,
+    matrixSort: "co2-desc",
+    trajectoryMode: "both",
+    structureIso: "CHN",
+  };
+  const records = [];
+  const byIso = new Map();
+  const countryByIso = new Map();
+  const sectorRows = new Map();
+  const energyByIso = new Map();
+  const boundPlotClicks = new WeakSet();
+  const $ = (id) => document.getElementById(id);
+  const plotly = () => window.Plotly;
+
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
+      if (quoted) {
+        if (character === '"' && text[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else if (character === '"') {
+          quoted = false;
+        } else {
+          field += character;
+        }
+      } else if (character === '"' && field.length === 0) {
+        quoted = true;
+      } else if (character === ",") {
+        row.push(field);
+        field = "";
+      } else if (character === "\n") {
+        row.push(field.replace(/\r$/, ""));
+        if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+        row = [];
+        field = "";
+      } else {
+        field += character;
+      }
+    }
+    if (field.length || row.length) {
+      row.push(field.replace(/\r$/, ""));
+      if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+    }
+    if (!rows.length) return [];
+    const headers = rows[0].map((header) => header.trim().replace(/^\uFEFF/, ""));
+    return rows.slice(1).map((cells) =>
+      Object.fromEntries(headers.map((header, index) => [header, (cells[index] ?? "").trim()]))
+    );
+  }
+
+  function numberOrNull(value) {
+    if (value === null || value === undefined || value === "" || value === "..") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  async function fetchText(path) {
+    const response = await fetch(path);
+    if (!response.ok) throw new Error(`Could not load ${path} (${response.status}).`);
+    return response.text();
+  }
+
+  function setStatus(message, kind = "") {
+    const status = $("data-status");
+    status.classList.toggle("is-ready", kind === "ready");
+    status.classList.toggle("is-error", kind === "error");
+    status.lastChild.textContent = ` ${message}`;
+  }
+
+  function prepareRecords(gdpRows, co2Rows) {
+    const gdpByKey = new Map();
+    for (const row of gdpRows) {
+      const iso = row.Code?.trim().toUpperCase();
+      const year = Number(row.Year);
+      const gdp = numberOrNull(row["GDP per capita"]);
+      if (!/^[A-Z]{3}$/.test(iso || "") || !Number.isInteger(year) || gdp === null || gdp <= 0) continue;
+      gdpByKey.set(`${iso}|${year}`, { gdp, name: row.Entity, region: row["World region according to OWID"] || "Unknown" });
+    }
+
+    for (const row of co2Rows) {
+      const iso = row.Code?.trim().toUpperCase();
+      const year = Number(row.Year);
+      const co2 = numberOrNull(row["Per capita emissions"]);
+      if (!/^[A-Z]{3}$/.test(iso || "") || !Number.isInteger(year) || co2 === null || co2 < 0) continue;
+      const gdpRecord = gdpByKey.get(`${iso}|${year}`);
+      if (!gdpRecord) continue;
+      const region = row["World region according to OWID"] || gdpRecord.region || "Unknown";
+      const record = {
+        iso,
+        year,
+        country: row.Entity || gdpRecord.name || iso,
+        region,
+        gdp: gdpRecord.gdp,
+        co2,
+      };
+      records.push(record);
+      if (!byIso.has(iso)) {
+        byIso.set(iso, []);
+        countryByIso.set(iso, { iso, country: record.country, region });
+      }
+      byIso.get(iso).push(record);
+    }
+    for (const countryRows of byIso.values()) countryRows.sort((a, b) => a.year - b.year);
+    records.sort((a, b) => a.year - b.year || a.country.localeCompare(b.country));
+  }
+
+  function prepareSectorRows(rows) {
+    const seriesNames = {
+      "NV.AGR.TOTL.ZS": "Agriculture",
+      "NV.IND.TOTL.ZS": "Industry",
+      "NV.IND.MANF.ZS": "Manufacturing",
+      "NV.SRV.TOTL.ZS": "Services",
+    };
+    for (const row of rows) {
+      const iso = row["Country Code"]?.trim().toUpperCase();
+      const series = seriesNames[row["Series Code"]?.trim()];
+      if (!countryByIso.has(iso) || !series) continue;
+      if (!sectorRows.has(iso)) sectorRows.set(iso, { name: row["Country Name"], values: {} });
+      const profile = sectorRows.get(iso);
+      for (const year of YEARS) {
+        const key = `${year} [YR${year}]`;
+        const value = numberOrNull(row[key]);
+        if (value !== null) {
+          profile.values[year] ??= {};
+          profile.values[year][series] = value;
+        }
+      }
+    }
+  }
+
+  function prepareEnergyRows(rows) {
+    const fields = {
+      total_energy_per_capita_kwh: "energyPerCapitaKwh",
+      coal_energy_share_pct: "coalShare",
+      oil_energy_share_pct: "oilShare",
+      gas_energy_share_pct: "gasShare",
+      nuclear_energy_share_pct: "nuclearShare",
+      renewables_energy_share_pct: "renewablesShare",
+    };
+    for (const row of rows) {
+      const iso = row.iso_code?.trim().toUpperCase();
+      const year = Number(row.year);
+      if (!countryByIso.has(iso) || !Number.isInteger(year) || year < YEAR_MIN || year > YEAR_MAX) continue;
+      if (!energyByIso.has(iso)) energyByIso.set(iso, new Map());
+      const values = Object.fromEntries(
+        Object.entries(fields).map(([field, key]) => [key, numberOrNull(row[field])])
+      );
+      energyByIso.get(iso).set(year, values);
+    }
+  }
+
+  function energyRecord(iso, year) {
+    return energyByIso.get(iso)?.get(Number(year)) || null;
+  }
+
+  function selectedRows(year = state.year) {
+    return records.filter((row) =>
+      row.year === Number(year) && (state.region === ALL_REGION || row.region === state.region)
+    );
+  }
+
+  function countryRecord(iso, year) {
+    return (byIso.get(iso) || []).find((row) => row.year === Number(year)) || null;
+  }
+
+  function windowBounds() {
+    return { start: Math.max(YEAR_MIN, state.year - state.windowYears + 1), end: state.year };
+  }
+
+  function windowChange(iso, field) {
+    const { start, end } = windowBounds();
+    const first = countryRecord(iso, start);
+    const last = countryRecord(iso, end);
+    if (!first || !last || first[field] <= 0) return null;
+    return ((last[field] / first[field]) - 1) * 100;
+  }
+
+  function yoyChange(iso, year, field) {
+    const current = countryRecord(iso, year);
+    const previous = countryRecord(iso, Number(year) - 1);
+    if (!current || !previous || previous[field] <= 0) return null;
+    return ((current[field] / previous[field]) - 1) * 100;
+  }
+
+  function pathwayLabel(gdpChange, co2Change) {
+    if (gdpChange === null || co2Change === null) return "Incomplete data";
+    if (gdpChange >= 0 && co2Change < 0) return "Per-capita decoupling";
+    if (gdpChange >= 0 && co2Change >= 0) return "Growth with rising CO₂";
+    if (gdpChange < 0 && co2Change < 0) return "Both declined";
+    return "Emissions rose as GDP fell";
+  }
+
+  function fmt(value, digits = 1) {
+    if (value === null || !Number.isFinite(value)) return "—";
+    return value.toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  }
+
+  function fmtCompact(value) {
+    if (value === null || !Number.isFinite(value)) return "—";
+    return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
+
+  function fmtPercent(value, digits = 1) {
+    if (value === null || !Number.isFinite(value)) return "n/a";
+    return `${value > 0 ? "+" : ""}${fmt(value, digits)}%`;
+  }
+
+  function pearsonCorrelation(rows) {
+    if (rows.length < 3) return null;
+    const meanX = rows.reduce((sum, row) => sum + row.gdp, 0) / rows.length;
+    const meanY = rows.reduce((sum, row) => sum + row.co2, 0) / rows.length;
+    let covariance = 0;
+    let varianceX = 0;
+    let varianceY = 0;
+    for (const row of rows) {
+      const dx = row.gdp - meanX;
+      const dy = row.co2 - meanY;
+      covariance += dx * dy;
+      varianceX += dx * dx;
+      varianceY += dy * dy;
+    }
+    if (!varianceX || !varianceY) return null;
+    return Math.max(-1, Math.min(1, covariance / Math.sqrt(varianceX * varianceY)));
+  }
+
+  function pearsonR2(rows) {
+    const correlation = pearsonCorrelation(rows);
+    return correlation === null ? null : correlation * correlation;
+  }
+
+  function makeLayout(extra = {}) {
+    return {
+      ...BASE_LAYOUT,
+      ...extra,
+      xaxis: { ...BASE_LAYOUT.xaxis, ...(extra.xaxis || {}) },
+      yaxis: { ...BASE_LAYOUT.yaxis, ...(extra.yaxis || {}) },
+    };
+  }
+
+  function updateCountryOptions() {
+    const options = [...countryByIso.values()].sort((a, b) => a.country.localeCompare(b.country));
+    for (const id of ["country-select", "compare-select"]) {
+      const select = $(id);
+      const previous = id === "country-select" ? state.focusIso : state.compareIso;
+      select.replaceChildren();
+      if (id === "compare-select") {
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "No comparison";
+        select.append(none);
+      }
+      for (const country of options) {
+        const option = document.createElement("option");
+        option.value = country.iso;
+        option.textContent = country.country;
+        select.append(option);
+      }
+      select.value = previous && countryByIso.has(previous) ? previous : options[0]?.iso || "";
+    }
+    state.focusIso = $("country-select").value;
+    state.compareIso = $("compare-select").value;
+    $("hero-country-count").textContent = String(countryByIso.size);
+  }
+
+  function quantileGroups() {
+    const baseYearRows = records.filter((row) => row.year === YEAR_MIN).sort((a, b) => a.gdp - b.gdp);
+    const size = Math.max(1, Math.floor(baseYearRows.length * 0.1));
+    return {
+      lower: new Set(baseYearRows.slice(0, size).map((row) => row.iso)),
+      higher: new Set(baseYearRows.slice(-size).map((row) => row.iso)),
+      n: size,
+    };
+  }
+
+  let baselineGroups = { lower: new Set(), higher: new Set(), n: 0 };
+
+  function groupOf(iso) {
+    if (baselineGroups.lower.has(iso)) return "Lower baseline GDP decile";
+    if (baselineGroups.higher.has(iso)) return "Higher baseline GDP decile";
+    return "Middle baseline GDP";
+  }
+
+  function updateKpis() {
+    const rows = selectedRows();
+    const correlation = pearsonCorrelation(rows);
+    const r2 = correlation === null ? null : correlation * correlation;
+    const co2Values = rows.map((row) => row.co2).sort((a, b) => a - b);
+    const median = co2Values.length
+      ? co2Values.length % 2
+        ? co2Values[(co2Values.length - 1) / 2]
+        : (co2Values[co2Values.length / 2 - 1] + co2Values[co2Values.length / 2]) / 2
+      : null;
+    const gdpChange = windowChange(state.focusIso, "gdp");
+    const co2Change = windowChange(state.focusIso, "co2");
+    $("kpi-count").textContent = fmtCompact(rows.length);
+    $("kpi-correlation").textContent = correlation === null ? "—" : fmt(correlation, 2);
+    $("kpi-correlation-note").textContent = r2 === null
+      ? "Too few observations for a correlation"
+      : `Pearson r · annual R² = ${fmt(r2, 2)}`;
+    $("kpi-co2").textContent = median === null ? "—" : fmt(median, 1);
+    $("kpi-pathway").textContent = pathwayLabel(gdpChange, co2Change);
+    $("kpi-pathway-note").textContent = `${countryByIso.get(state.focusIso)?.country || "Focus country"} · ${fmtPercent(gdpChange)} GDP · ${fmtPercent(co2Change)} CO₂`;
+    $("year-label").textContent = String(state.year);
+    $("map-year-label").textContent = String(state.year);
+    const { start, end } = windowBounds();
+    $("window-caption").textContent = `${start}–${end}`;
+    $("matrix-start-label").textContent = String(start);
+    $("matrix-end-label").textContent = String(end);
+    $("trajectory-window-label").textContent = `${start}–${end}`;
+    $("kaya-start-label").textContent = String(start);
+    $("window-caption").title = "Baseline is the first year of the selected window.";
+    document.querySelectorAll(".window-button").forEach((button) => {
+      button.classList.toggle("is-active", Number(button.dataset.window) === state.windowYears);
+    });
+  }
+
+  function bindPlotClick(elementId, onClick) {
+    const element = $(elementId);
+    if (boundPlotClicks.has(element)) return;
+    boundPlotClicks.add(element);
+    element.on("plotly_click", onClick);
+  }
+
+  function renderGlobalScatter() {
+    const rows = selectedRows().filter((row) => row.gdp > 0 && row.co2 >= 0);
+    $("scatter-count").textContent = `${rows.length.toLocaleString()} countries`;
+    const traces = [...new Set(rows.map((row) => row.region))].sort().map((region) => {
+      const sample = rows.filter((row) => row.region === region);
+      return {
+        type: "scatter",
+        mode: "markers",
+        name: region,
+        x: sample.map((row) => row.gdp),
+        y: sample.map((row) => row.co2),
+        customdata: sample.map((row) => [row.country, row.iso, row.region]),
+        marker: {
+          size: 8,
+          opacity: 0.78,
+          color: REGION_COLORS[region] || REGION_COLORS.Unknown,
+          line: { color: "#ffffff", width: 0.7 },
+        },
+        hovertemplate: "<b>%{customdata[0]}</b><br>GDP/person: $%{x:,.0f}<br>CO₂/person: %{y:.2f} t<br>%{customdata[2]}<extra></extra>",
+      };
+    });
+    const layout = makeLayout({
+      margin: { t: 20, r: 17, b: 52, l: 64 },
+      legend: { orientation: "h", y: -0.28, font: { size: 9 } },
+      xaxis: { title: "GDP per person (2021 international-$)", type: state.logGdp ? "log" : "linear" },
+      yaxis: { title: "CO₂ per person (tonnes)", rangemode: "tozero" },
+    });
+    plotly().react("global-scatter", traces, layout, CHART_CONFIG);
+    bindPlotClick("global-scatter", (event) => {
+      const iso = event.points?.[0]?.customdata?.[1];
+      if (iso) setFocusCountry(iso);
+    });
+    const correlation = pearsonCorrelation(rows);
+    $("scatter-insight").textContent = correlation === null
+      ? "The selected sample is too small to estimate a cross-country correlation."
+      : `Pearson r = ${fmt(correlation, 2)} (R² = ${fmt(correlation * correlation, 2)}) for ${rows.length} matched countries in ${state.year}. This describes association, not causation.`;
+  }
+
+  function colorForValue(value, maxValue) {
+    if (value === null || !Number.isFinite(value)) return "#e2e9eb";
+    const stops = [
+      [0, [233, 241, 238]],
+      [0.2, [187, 216, 203]],
+      [0.45, [110, 171, 160]],
+      [0.72, [42, 123, 132]],
+      [1, [21, 61, 87]],
+    ];
+    const t = Math.max(0, Math.min(1, value / maxValue));
+    let index = 0;
+    while (index < stops.length - 2 && t > stops[index + 1][0]) index += 1;
+    const [leftT, left] = stops[index];
+    const [rightT, right] = stops[index + 1];
+    const fraction = (t - leftT) / (rightT - leftT);
+    const color = left.map((channel, i) => Math.round(channel + (right[i] - channel) * fraction));
+    return `rgb(${color.join(",")})`;
+  }
+
+  function renderMap() {
+    const currentRows = selectedRows();
+    const values = currentRows.map((row) => row.co2).filter(Number.isFinite).sort((a, b) => a - b);
+    const maxValue = values.length ? values[Math.min(values.length - 1, Math.floor(values.length * 0.95))] || 1 : 1;
+    const map = $("world-map");
+    const tooltip = $("tooltip");
+    const countries = map.querySelectorAll(".map-country");
+    const rowByIso = new Map(currentRows.map((row) => [row.iso, row]));
+    for (const path of countries) {
+      const iso = path.dataset.iso;
+      const row = rowByIso.get(iso);
+      path.style.fill = colorForValue(row?.co2 ?? null, maxValue);
+      path.classList.toggle("is-focus", iso === state.focusIso);
+      path.classList.toggle("is-compare", Boolean(state.compareIso) && iso === state.compareIso);
+      path.setAttribute("tabindex", "0");
+      path.setAttribute("role", "button");
+      const country = row?.country || path.dataset.name || iso;
+      path.setAttribute("aria-label", row
+        ? `${country}: ${fmt(row.co2, 2)} tonnes CO2 per person; GDP ${fmtCompact(row.gdp)}`
+        : `${country}: no matched data in ${state.year}`);
+      path.onmouseenter = (event) => {
+        tooltip.innerHTML = row
+          ? `<strong>${escapeHtml(country)}</strong><br>GDP/person: $${fmtCompact(row.gdp)}<br>CO₂/person: ${fmt(row.co2, 2)} t<br>${escapeHtml(row.region)} · ${state.year}`
+          : `<strong>${escapeHtml(country)}</strong><br>No matched data in ${state.year}`;
+        tooltip.style.display = "block";
+        positionTooltip(event);
+      };
+      path.onmousemove = positionTooltip;
+      path.onmouseleave = () => { tooltip.style.display = "none"; };
+      path.onclick = () => setFocusCountry(iso);
+      path.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          setFocusCountry(iso);
+        }
+      };
+    }
+    const focus = countryRecord(state.focusIso, state.year);
+    $("map-insight").textContent = focus
+      ? `${focus.country} in ${state.year}: ${fmt(focus.co2, 2)} tonnes of CO₂ per person and $${fmtCompact(focus.gdp)} GDP per person. The colour scale is capped at the 95th percentile to retain contrast.`
+      : `No matched country data for ${countryByIso.get(state.focusIso)?.country || "the focus country"} in ${state.year}.`;
+  }
+
+  function positionTooltip(event) {
+    const tooltip = $("tooltip");
+    const left = Math.min(window.innerWidth - tooltip.offsetWidth - 10, event.clientX + 13);
+    const top = Math.min(window.innerHeight - tooltip.offsetHeight - 10, event.clientY + 13);
+    tooltip.style.left = `${Math.max(8, left)}px`;
+    tooltip.style.top = `${Math.max(8, top)}px`;
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[character]);
+  }
+
+  function renderMatrix() {
+    const { start, end } = windowBounds();
+    let countries = [...countryByIso.values()].filter((country) =>
+      state.matrixRegion === ALL_REGION || country.region === state.matrixRegion
+    );
+    const data = countries.map((country) => ({
+      ...country,
+      gdp: windowChange(country.iso, "gdp"),
+      co2: windowChange(country.iso, "co2"),
+    }));
+    const sorters = {
+      "co2-desc": (a, b) => (b.co2 ?? -Infinity) - (a.co2 ?? -Infinity),
+      "co2-asc": (a, b) => (a.co2 ?? Infinity) - (b.co2 ?? Infinity),
+      "gdp-desc": (a, b) => (b.gdp ?? -Infinity) - (a.gdp ?? -Infinity),
+      name: (a, b) => a.country.localeCompare(b.country),
+    };
+    data.sort(sorters[state.matrixSort] || sorters["co2-desc"]);
+
+    const header = `<thead><tr><th scope="col">Country / region</th>${YEARS.filter((year) => year >= start && year <= end)
+      .map((year) => `<th scope="col">${year}</th>`).join("")}<th scope="col">GDP Δ</th><th scope="col">CO₂ Δ</th></tr></thead>`;
+    const body = data.map((country) => {
+      const cells = YEARS.filter((year) => year >= start && year <= end).map((year) => {
+        const gdp = windowChange(country.iso, "gdp");
+        const co2 = windowChange(country.iso, "co2");
+        const pathway = pathwayLabel(gdp, co2);
+        const yearRecord = countryRecord(country.iso, year);
+        if (!yearRecord) return `<td><span class="path-cell" title="${country.country}: no data in ${year}" style="background:#edf1f1">·</span></td>`;
+        const yearStart = countryRecord(country.iso, start);
+        const cumulativeGdp = yearStart && yearStart.gdp > 0 ? ((yearRecord.gdp / yearStart.gdp) - 1) * 100 : null;
+        const cumulativeCo2 = yearStart && yearStart.co2 > 0 ? ((yearRecord.co2 / yearStart.co2) - 1) * 100 : null;
+        const cellPath = pathwayLabel(cumulativeGdp, cumulativeCo2);
+        const color = pathwayColor(cellPath, cumulativeGdp, cumulativeCo2);
+        const description = `${country.country}, ${year}: GDP ${fmtPercent(cumulativeGdp)} and CO₂ ${fmtPercent(cumulativeCo2)} relative to ${start}. Overall ${pathway}.`;
+        return `<td><span class="path-cell" role="button" tabindex="0" data-iso="${country.iso}" data-year="${year}" title="${escapeHtml(description)}" aria-label="${escapeHtml(description)}" style="background:${color}"><span class="path-cell-values"><span class="path-cell-gdp">${compactCell(cumulativeGdp)}</span><span class="path-cell-co2">${compactCell(cumulativeCo2)}</span></span></span></td>`;
+      }).join("");
+      return `<tr class="pathway-row${country.iso === state.focusIso ? " is-focus" : ""}" data-iso="${country.iso}" tabindex="0"><th scope="row"><span class="pathway-country" title="${escapeHtml(country.country)}">${escapeHtml(country.country)}</span></th>${cells}<td>${fmtPercent(country.gdp)}</td><td>${fmtPercent(country.co2)}</td></tr>`;
+    }).join("");
+    const yearsToShow = end - start + 1;
+    $("pathway-matrix").innerHTML = `<table class="pathway-table" aria-label="Country GDP and CO2 change from ${start} to ${end}">${header}<tbody>${body}</tbody></table>`;
+    $("matrix-reading").textContent = `${data.length} countries shown · Each cell shows cumulative GDP and CO₂ change relative to ${start}. Endpoint columns compare ${start} with ${end}. ${yearsToShow} annual snapshots.`;
+
+    const current = countryRecord(state.focusIso, state.year);
+    const baseline = countryRecord(state.focusIso, start);
+    const gdp = current && baseline && baseline.gdp > 0 ? ((current.gdp / baseline.gdp) - 1) * 100 : null;
+    const co2 = current && baseline && baseline.co2 > 0 ? ((current.co2 / baseline.co2) - 1) * 100 : null;
+    $("matrix-reading").dataset.focus = current
+      ? `${current.country} in ${state.year}: GDP ${fmtPercent(gdp)}; CO₂ ${fmtPercent(co2)}; ${pathwayLabel(gdp, co2)}.`
+      : "The focus country does not have matched endpoint values for this window.";
+    $("matrix-reading").title = $("matrix-reading").dataset.focus;
+  }
+
+  function compactCell(value) {
+    if (value === null) return "·";
+    const rounded = Math.round(value);
+    return `${rounded > 0 ? "+" : ""}${rounded}%`;
+  }
+
+  function pathwayColor(label, gdp, co2) {
+    const key = label === "Per-capita decoupling" ? "decoupling"
+      : label === "Growth with rising CO₂" ? "growth"
+        : label === "Both declined" ? "contraction"
+          : label === "Emissions rose as GDP fell" ? "reverse" : "unknown";
+    const rgb = PATHWAY_COLORS[key];
+    const strength = Math.min(1, Math.max(Math.abs(gdp || 0), Math.abs(co2 || 0)) / 150);
+    const alpha = key === "unknown" ? 0.25 : 0.14 + strength * 0.38;
+    return `rgba(${rgb.join(",")},${alpha.toFixed(2)})`;
+  }
+
+  function onMatrixInteraction(event) {
+    const cell = event.target.closest("[data-iso][data-year]");
+    if (cell) {
+      setFocusCountry(cell.dataset.iso);
+      setYear(Number(cell.dataset.year));
+      return;
+    }
+    const row = event.target.closest("tr[data-iso]");
+    if (row) setFocusCountry(row.dataset.iso);
+  }
+
+  function onMatrixKeydown(event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const cell = event.target.closest("[data-iso][data-year]");
+    if (cell) {
+      event.preventDefault();
+      setFocusCountry(cell.dataset.iso);
+      setYear(Number(cell.dataset.year));
+    } else {
+      const row = event.target.closest("tr[data-iso]");
+      if (row) setFocusCountry(row.dataset.iso);
+    }
+  }
+
+  function renderQuadrant() {
+    const { start, end } = windowBounds();
+    const symmetricLog = (value) => Math.sign(value) * Math.log10(1 + Math.abs(value));
+    const axisTicks = [-10000, -1000, -100, -10, -1, 0, 1, 10, 100, 1000, 10000];
+    const samples = [...countryByIso.values()].map((country) => ({
+      ...country,
+      gdp: windowChange(country.iso, "gdp"),
+      co2: windowChange(country.iso, "co2"),
+    })).filter((row) => row.gdp !== null && row.co2 !== null);
+    const groups = [
+      ["Per-capita decoupling", (row) => row.gdp >= 0 && row.co2 < 0, "#218c80"],
+      ["GDP and CO₂ rose", (row) => row.gdp >= 0 && row.co2 >= 0, "#dd8953"],
+      ["GDP and CO₂ fell", (row) => row.gdp < 0 && row.co2 < 0, "#5b8397"],
+      ["CO₂ rose as GDP fell", (row) => row.gdp < 0 && row.co2 >= 0, "#9f697f"],
+    ];
+    const traces = groups.map(([name, matches, color]) => {
+      const rows = samples.filter(matches);
+      return {
+        type: "scatter",
+        mode: "markers",
+        name,
+        x: rows.map((row) => symmetricLog(row.gdp)),
+        y: rows.map((row) => symmetricLog(row.co2)),
+        customdata: rows.map((row) => [row.country, row.iso, row.gdp, row.co2]),
+        marker: { size: 8, color, opacity: 0.76, line: { color: "#ffffff", width: 0.6 } },
+        hovertemplate: "<b>%{customdata[0]}</b><br>GDP change: %{customdata[2]:+.1f}%<br>CO₂ change: %{customdata[3]:+.1f}%<extra></extra>",
+      };
+    });
+    plotly().react("quadrant-chart", traces, makeLayout({
+      margin: { t: 18, r: 15, b: 55, l: 62 },
+      legend: { orientation: "h", y: -0.28, font: { size: 8 } },
+      xaxis: {
+        title: `GDP/person change · ${start}–${end} · symmetric-log (%)`,
+        zeroline: true,
+        zerolinewidth: 2,
+        tickmode: "array",
+        tickvals: axisTicks.map(symmetricLog),
+        ticktext: axisTicks.map((tick) => tick === 0 ? "0%" : `${tick > 0 ? "+" : ""}${tick}%`),
+      },
+      yaxis: {
+        title: `CO₂/person change · ${start}–${end} · symmetric-log (%)`,
+        zeroline: true,
+        zerolinewidth: 2,
+        tickmode: "array",
+        tickvals: axisTicks.map(symmetricLog),
+        ticktext: axisTicks.map((tick) => tick === 0 ? "0%" : `${tick > 0 ? "+" : ""}${tick}%`),
+      },
+      shapes: [
+        { type: "line", x0: 0, x1: 0, y0: 0, y1: 1, yref: "paper", line: { color: "#9bacaf", width: 1, dash: "dot" } },
+        { type: "line", x0: 0, x1: 1, xref: "paper", y0: 0, y1: 0, line: { color: "#9bacaf", width: 1, dash: "dot" } },
+      ],
+    }), CHART_CONFIG);
+    bindPlotClick("quadrant-chart", (event) => {
+      const iso = event.points?.[0]?.customdata?.[1];
+      if (iso) setFocusCountry(iso);
+    });
+    const decoupled = samples.filter((row) => row.gdp >= 0 && row.co2 < 0).length;
+    $("quadrant-insight").textContent = `${decoupled} of ${samples.length} countries show GDP growth with declining CO₂ per person across ${start}–${end}. Countries with incomplete endpoint data are omitted.`;
+  }
+
+  function renderTrajectory() {
+    const { start, end } = windowBounds();
+    const selected = [
+      { iso: state.focusIso, label: "Focus", dash: "solid" },
+      { iso: state.compareIso, label: "Comparison", dash: "dash" },
+    ].filter((item) => item.iso);
+    const measures = state.trajectoryMode === "both"
+      ? [{ field: "gdp", name: "GDP per person index", color: "#168a8b" }, { field: "co2", name: "CO₂ per person index", color: "#e18356" }]
+      : [{ field: state.trajectoryMode, name: state.trajectoryMode === "gdp" ? "GDP per person index" : "CO₂ per person index", color: state.trajectoryMode === "gdp" ? "#168a8b" : "#e18356" }];
+    const traces = [];
+    for (const country of selected) {
+      const baseline = countryRecord(country.iso, start);
+      const name = countryByIso.get(country.iso)?.country || country.iso;
+      for (const measure of measures) {
+        const rows = (byIso.get(country.iso) || []).filter((row) => row.year >= start && row.year <= end);
+        traces.push({
+          type: "scatter",
+          mode: "lines+markers",
+          name: `${name} · ${measure.field.toUpperCase()}`,
+          x: rows.map((row) => row.year),
+          y: rows.map((row) => baseline && baseline[measure.field] > 0 ? (row[measure.field] / baseline[measure.field]) * 100 : null),
+          line: { color: measure.color, dash: country.dash, width: country.dash === "solid" ? 2.4 : 1.8 },
+          marker: { size: 5 },
+          connectgaps: false,
+          hovertemplate: `<b>${escapeHtml(name)}</b><br>${measure.name}: %{y:.1f}<br>Year: %{x}<extra></extra>`,
+        });
+      }
+    }
+    plotly().react("trajectory-chart", traces, makeLayout({
+      margin: { t: 15, r: 15, b: 58, l: 58 },
+      legend: { orientation: "h", y: -0.32, font: { size: 8 } },
+      xaxis: { title: "Year", tickmode: "linear", dtick: 2 },
+      yaxis: { title: "Index (baseline = 100)", rangemode: "tozero" },
+      shapes: [{ type: "line", x0: start, x1: end, y0: 100, y1: 100, line: { color: "#9cadad", dash: "dot", width: 1 } }],
+    }), CHART_CONFIG);
+    const focusName = countryByIso.get(state.focusIso)?.country || state.focusIso;
+    const gdp = windowChange(state.focusIso, "gdp");
+    const co2 = windowChange(state.focusIso, "co2");
+    $("trajectory-insight").textContent = `${focusName}: GDP/person ${fmtPercent(gdp)}; CO₂/person ${fmtPercent(co2)} between ${start} and ${end}. The dashed line (when selected) is the comparison country.`;
+    renderPeers();
+  }
+
+  function renderPeers() {
+    const focus = countryRecord(state.focusIso, state.year);
+    const tbody = $("peer-table");
+    if (!focus) {
+      tbody.innerHTML = `<tr><td colspan="4" class="table-empty">No data for this country in ${state.year}.</td></tr>`;
+      $("peer-summary").textContent = "A matched peer requires GDP and CO₂ data in the selected year.";
+      return;
+    }
+    const peers = selectedRows().filter((row) =>
+      row.iso !== state.focusIso && row.gdp > 0 && Math.abs(row.gdp - focus.gdp) / focus.gdp <= 0.1
+    ).map((row) => ({ ...row, gap: row.co2 - focus.co2 }))
+      .sort((a, b) => Math.abs(a.gap) - Math.abs(b.gap)).slice(0, 10);
+    $("peer-summary").textContent = `${peers.length} GDP-matched peer${peers.length === 1 ? "" : "s"} within ±10% of ${focus.country} at $${fmtCompact(focus.gdp)} GDP/person.`;
+    if (!peers.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="table-empty">No countries fall within ±10% of this GDP level in ${state.year}.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = peers.map((peer) => `<tr data-iso="${peer.iso}" title="Click to focus on ${escapeHtml(peer.country)}"><td>${escapeHtml(peer.country)}</td><td>$${fmtCompact(peer.gdp)}</td><td>${fmt(peer.co2, 2)} t</td><td>${fmtPercent(peer.gap, 2)}</td></tr>`).join("");
+    tbody.querySelectorAll("tr[data-iso]").forEach((row) => row.addEventListener("click", () => setFocusCountry(row.dataset.iso)));
+  }
+
+  function renderAnnual() {
+    const { start, end } = windowBounds();
+    const years = YEARS.filter((year) => year > start && year <= end);
+    const selected = [
+      { iso: state.focusIso, label: countryByIso.get(state.focusIso)?.country || state.focusIso, dash: "solid" },
+      { iso: state.compareIso, label: countryByIso.get(state.compareIso)?.country || state.compareIso, dash: "dash" },
+    ].filter((item) => item.iso);
+    const traces = [];
+    for (const country of selected) {
+      for (const measure of [
+        { field: "gdp", label: "GDP/person", color: "#168a8b" },
+        { field: "co2", label: "CO₂/person", color: "#e18356" },
+      ]) {
+        const values = years.map((year) => yoyChange(country.iso, year, measure.field));
+        traces.push({
+          type: "scatter",
+          mode: "lines+markers",
+          name: `${country.label} · ${measure.label}`,
+          x: years,
+          y: values,
+          connectgaps: false,
+          line: { color: measure.color, dash: country.dash, width: 2 },
+          marker: { size: 5 },
+          hovertemplate: `<b>${escapeHtml(country.label)}</b><br>${measure.label}: %{y:.2f}%<br>Year: %{x}<extra></extra>`,
+        });
+      }
+    }
+    plotly().react("annual-chart", traces, makeLayout({
+      margin: { t: 15, r: 16, b: 58, l: 58 },
+      legend: { orientation: "h", y: -0.31, font: { size: 8 } },
+      xaxis: { title: "Year", tickmode: "linear", dtick: 1 },
+      yaxis: { title: "Year-over-year change (%)", zeroline: true, zerolinewidth: 2 },
+      shapes: [{ type: "line", x0: start + 0.5, x1: end + 0.5, y0: 0, y1: 0, line: { color: "#7e9298", dash: "dot", width: 1 } }],
+    }), CHART_CONFIG);
+    const selectedCo2 = years.map((year) => ({ year, value: yoyChange(state.focusIso, year, "co2") })).filter((item) => item.value !== null);
+    const largest = selectedCo2.reduce((best, item) => !best || Math.abs(item.value) > Math.abs(best.value) ? item : best, null);
+    $("annual-insight").textContent = selectedCo2.length
+      ? `${countryByIso.get(state.focusIso)?.country || "Focus country"} has ${selectedCo2.length} annual CO₂ changes in this window. Largest movement: ${fmtPercent(largest.value, 2)} in ${largest.year}.`
+      : "No adjacent-year CO₂ observations are available for the focus country in this window.";
+  }
+
+  function populateStructureOptions() {
+    const select = $("structure-country");
+    select.replaceChildren();
+    for (const [iso, profile] of [...sectorRows.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name))) {
+      const option = document.createElement("option");
+      option.value = iso;
+      option.textContent = profile.name;
+      select.append(option);
+    }
+    if (sectorRows.has(state.structureIso)) select.value = state.structureIso;
+    else if (select.options.length) {
+      state.structureIso = select.options[0].value;
+      select.value = state.structureIso;
+    }
+  }
+
+  function renderStructure() {
+    const profile = sectorRows.get(state.structureIso);
+    if (!profile) {
+      plotly().react("sector-chart", [], makeLayout({ annotations: [{ text: "No sector-share data is available.", x: 0.5, y: 0.5, xref: "paper", yref: "paper", showarrow: false }] }), CHART_CONFIG);
+      $("sector-insight").textContent = "This country is not present in the supplied sector-share dataset.";
+    } else {
+      const colors = { Agriculture: "#70a896", Industry: "#d9a153", Manufacturing: "#7d89bc", Services: "#438ca0" };
+      const traces = Object.keys(colors).map((sector) => ({
+        type: "scatter",
+        mode: "lines+markers",
+        name: sector,
+        x: YEARS,
+        y: YEARS.map((year) => profile.values[year]?.[sector] ?? null),
+        connectgaps: false,
+        line: { color: colors[sector], width: 2 },
+        marker: { size: 4 },
+        hovertemplate: `${sector}: %{y:.1f}%<br>%{x}<extra></extra>`,
+      }));
+      plotly().react("sector-chart", traces, makeLayout({
+        margin: { t: 16, r: 15, b: 50, l: 58 },
+        legend: { orientation: "h", y: -0.26, font: { size: 8 } },
+        xaxis: { title: "Year", tickmode: "linear", dtick: 3 },
+        yaxis: { title: "Share of GDP (%)", rangemode: "tozero" },
+      }), CHART_CONFIG);
+      const available = YEARS.filter((year) => Object.keys(profile.values[year] || {}).length > 0).length;
+      $("sector-insight").textContent = `${profile.name}: ${available} years with at least one reported sector share (2005–2024). Agriculture, industry, manufacturing and services are value-added shares, not direct measures of energy use or emissions.`;
+    }
+    renderIntensity();
+    renderEnergyIntensity();
+    renderEnergyMix();
+    renderKaya();
+  }
+
+  function renderIntensity() {
+    const rows = selectedRows().map((row) => ({
+      ...row,
+      intensity: row.co2 / row.gdp,
+      group: baselineGroups.lower.has(row.iso) ? "Lower baseline GDP decile"
+        : baselineGroups.higher.has(row.iso) ? "Higher baseline GDP decile" : "Middle baseline GDP",
+    })).filter((row) => row.intensity > 0 && Number.isFinite(row.intensity));
+    const boxRows = rows.filter((row) => row.group !== "Middle baseline GDP");
+    const traces = ["Lower baseline GDP decile", "Higher baseline GDP decile"].map((group) => {
+      const sample = boxRows.filter((row) => row.group === group);
+      return {
+        type: "box",
+        name: group,
+        y: sample.map((row) => row.intensity),
+        boxpoints: "outliers",
+        marker: { color: group.startsWith("Lower") ? "#477fa6" : "#df8859", size: 4, opacity: 0.6 },
+        line: { color: group.startsWith("Lower") ? "#477fa6" : "#df8859" },
+        hovertemplate: `${group}<br>CO₂/GDP: %{y:.5f} tonnes per international-$<extra></extra>`,
+      };
+    });
+    plotly().react("intensity-chart", traces, makeLayout({
+      margin: { t: 25, r: 15, b: 60, l: 70 },
+      showlegend: false,
+      xaxis: { title: `Baseline GDP decile · ${state.year}` },
+      yaxis: { title: "CO₂ intensity (tonnes / international-$)", type: "log" },
+    }), CHART_CONFIG);
+    $("intensity-sample").textContent = `${boxRows.length} countries`;
+    $("intensity-insight").textContent = `${rows.length} matched countries have positive GDP and CO₂ values in ${state.year}. The lower/higher groups are the bottom/top 10% by 2005 GDP per person, not formal development classifications. The log-scale box plot excludes zero intensity.`;
+  }
+
+  function renderEnergyIntensity() {
+    const rows = selectedRows().map((row) => {
+      const energy = energyRecord(row.iso, row.year);
+      return {
+        ...row,
+        intensity: energy?.energyPerCapitaKwh > 0 ? energy.energyPerCapitaKwh / row.gdp : null,
+        group: groupOf(row.iso),
+      };
+    }).filter((row) => row.intensity > 0 && Number.isFinite(row.intensity));
+    const boxRows = rows.filter((row) => row.group !== "Middle baseline GDP");
+    const traces = ["Lower baseline GDP decile", "Higher baseline GDP decile"].map((group) => {
+      const sample = boxRows.filter((row) => row.group === group);
+      const color = group.startsWith("Lower") ? "#477fa6" : "#df8859";
+      return {
+        type: "box",
+        name: group,
+        y: sample.map((row) => row.intensity),
+        boxpoints: "outliers",
+        marker: { color, size: 4, opacity: 0.6 },
+        line: { color },
+        hovertemplate: `${group}<br>Energy/GDP: %{y:.3f} kWh per international-$<extra></extra>`,
+      };
+    });
+    plotly().react("energy-intensity-chart", traces, makeLayout({
+      margin: { t: 25, r: 15, b: 60, l: 70 },
+      showlegend: false,
+      xaxis: { title: `Baseline GDP decile · ${state.year}` },
+      yaxis: { title: "Energy intensity (kWh / international-$)", type: "log" },
+    }), CHART_CONFIG);
+    $("energy-intensity-sample").textContent = `${boxRows.length} countries`;
+    $("energy-intensity-insight").textContent = `${rows.length} matched countries have positive energy, GDP and CO₂ data in ${state.year}. Energy intensity is total energy supply per person divided by GDP per person; the log-scale box plot excludes zero.`;
+  }
+
+  function renderEnergyMix() {
+    const profile = countryByIso.get(state.structureIso);
+    $("energy-mix-country").textContent = profile?.country || "selected country";
+    const measures = [
+      { key: "coalShare", label: "Coal", color: "#64727b" },
+      { key: "oilShare", label: "Oil", color: "#cf8052" },
+      { key: "gasShare", label: "Natural gas", color: "#d8b15e" },
+      { key: "nuclearShare", label: "Nuclear", color: "#8473a8" },
+      { key: "renewablesShare", label: "Renewables", color: "#4b9c77" },
+    ];
+    const traces = measures.map((measure) => ({
+      type: "scatter",
+      mode: "lines+markers",
+      name: measure.label,
+      x: YEARS,
+      y: YEARS.map((year) => energyRecord(state.structureIso, year)?.[measure.key] ?? null),
+      connectgaps: false,
+      line: { color: measure.color, width: 2 },
+      marker: { size: 4 },
+      hovertemplate: `${measure.label}: %{y:.1f}%<br>%{x}<extra></extra>`,
+    }));
+    plotly().react("energy-mix-chart", traces, makeLayout({
+      margin: { t: 16, r: 15, b: 50, l: 58 },
+      legend: { orientation: "h", y: -0.26, font: { size: 8 } },
+      xaxis: { title: "Year", tickmode: "linear", dtick: 3 },
+      yaxis: { title: "Share of total energy supply (%)", range: [0, 100] },
+    }), CHART_CONFIG);
+    const availableYears = YEARS.filter((year) =>
+      measures.some((measure) => energyRecord(state.structureIso, year)?.[measure.key] !== null
+        && energyRecord(state.structureIso, year)?.[measure.key] !== undefined)
+    ).length;
+    $("energy-mix-insight").textContent = profile
+      ? `${profile.country}: source shares are available for ${availableYears} of 20 years. Lines are not filled across missing observations; the energy dataset does not report every source for every country-year.`
+      : "This country is not present in the matched energy dataset.";
+  }
+
+  function renderKaya() {
+    const { start, end } = windowBounds();
+    const years = YEARS.filter((year) => year >= start && year <= end);
+    const base = countryRecord(state.focusIso, start);
+    const baseEnergy = energyRecord(state.focusIso, start);
+    const name = countryByIso.get(state.focusIso)?.country || state.focusIso;
+    if (!base || !baseEnergy || base.gdp <= 0 || base.co2 <= 0 || baseEnergy.energyPerCapitaKwh <= 0) {
+      plotly().react("kaya-chart", [], makeLayout({
+        annotations: [{ text: "Positive GDP, CO₂ and energy data are required for the baseline.", x: 0.5, y: 0.5, xref: "paper", yref: "paper", showarrow: false }],
+      }), CHART_CONFIG);
+      $("kaya-insight").textContent = `The three-factor decomposition needs positive matched GDP, CO₂ and energy observations in ${start}.`;
+      return;
+    }
+    const gdpLog = [];
+    const energyIntensityLog = [];
+    const carbonIntensityLog = [];
+    const co2Log = [];
+    for (const year of years) {
+      const row = countryRecord(state.focusIso, year);
+      const energy = energyRecord(state.focusIso, year);
+      if (!row || !energy || row.gdp <= 0 || row.co2 <= 0 || energy.energyPerCapitaKwh <= 0) {
+        gdpLog.push(null);
+        energyIntensityLog.push(null);
+        carbonIntensityLog.push(null);
+        co2Log.push(null);
+        continue;
+      }
+      gdpLog.push(100 * Math.log(row.gdp / base.gdp));
+      const energyIntensity = energy.energyPerCapitaKwh / row.gdp;
+      const baseEnergyIntensity = baseEnergy.energyPerCapitaKwh / base.gdp;
+      const carbonIntensity = row.co2 / energy.energyPerCapitaKwh;
+      const baseCarbonIntensity = base.co2 / baseEnergy.energyPerCapitaKwh;
+      energyIntensityLog.push(100 * Math.log(energyIntensity / baseEnergyIntensity));
+      carbonIntensityLog.push(100 * Math.log(carbonIntensity / baseCarbonIntensity));
+      co2Log.push(100 * Math.log(row.co2 / base.co2));
+    }
+    const traces = [
+      { type: "scatter", mode: "lines+markers", name: "GDP/person", x: years, y: gdpLog, line: { color: "#168a8b", width: 2 }, marker: { size: 4 }, hovertemplate: "GDP/person log change: %{y:.1f} points<br>%{x}<extra></extra>" },
+      { type: "scatter", mode: "lines+markers", name: "Energy intensity", x: years, y: energyIntensityLog, line: { color: "#d8a650", width: 2 }, marker: { size: 4 }, hovertemplate: "Energy intensity log change: %{y:.1f} points<br>%{x}<extra></extra>" },
+      { type: "scatter", mode: "lines+markers", name: "Carbon intensity of energy", x: years, y: carbonIntensityLog, line: { color: "#9a6d9d", width: 2 }, marker: { size: 4 }, hovertemplate: "Carbon intensity log change: %{y:.1f} points<br>%{x}<extra></extra>" },
+      { type: "scatter", mode: "lines", name: "CO₂/person total change", x: years, y: co2Log, line: { color: "#e18356", width: 2, dash: "dash" }, hovertemplate: "CO₂/person log change: %{y:.1f} points<br>%{x}<extra></extra>" },
+    ];
+    plotly().react("kaya-chart", traces, makeLayout({
+      margin: { t: 14, r: 12, b: 52, l: 57 },
+      legend: { orientation: "h", y: -0.28, font: { size: 8 } },
+      xaxis: { title: "Year", tickmode: "linear", dtick: 3 },
+      yaxis: { title: "Cumulative log change (×100)", zeroline: true },
+    }), CHART_CONFIG);
+    const endRecord = countryRecord(state.focusIso, end);
+    const endEnergy = energyRecord(state.focusIso, end);
+    $("kaya-insight").textContent = endRecord
+      && endEnergy?.energyPerCapitaKwh > 0
+      ? `${name}, ${start}–${end}: the three log-change components sum to the CO₂/person change by identity. Missing country-years are left as gaps; values are descriptive, not causal.`
+      : `No positive matched energy, GDP and CO₂ endpoint data for ${name} in ${end}.`;
+  }
+
+  function renderR2() {
+    const annual = YEARS.filter((year) => year >= YEAR_MIN && year <= state.year).map((year) => {
+      const rows = records.filter((row) =>
+        row.year === year && (state.region === ALL_REGION || row.region === state.region)
+      );
+      return { year, r2: pearsonR2(rows), n: rows.length };
+    });
+    const trace = {
+      type: "scatter",
+      mode: "lines+markers",
+      name: "Annual cross-country R²",
+      x: annual.map((row) => row.year),
+      y: annual.map((row) => row.r2),
+      customdata: annual.map((row) => row.n),
+      line: { color: "#318894", width: 2 },
+      marker: { color: annual.map((row) => row.year === state.year ? "#e18356" : "#318894"), size: annual.map((row) => row.year === state.year ? 10 : 6) },
+      hovertemplate: "<b>%{x}</b><br>R²: %{y:.3f}<br>Countries: %{customdata}<extra></extra>",
+    };
+    plotly().react("r2-chart", [trace], makeLayout({
+      margin: { t: 20, r: 15, b: 48, l: 52 },
+      showlegend: false,
+      xaxis: { title: "Year", tickmode: "linear", dtick: 2 },
+      yaxis: { title: "R²", range: [0, 1] },
+    }), CHART_CONFIG);
+    bindPlotClick("r2-chart", (event) => {
+      const year = Number(event.points?.[0]?.x);
+      if (year >= YEAR_MIN && year <= YEAR_MAX) setYear(year);
+    });
+    bindPlotClick("r2-chart", (event) => {
+      const year = Number(event.points?.[0]?.x);
+      if (year >= YEAR_MIN && year <= YEAR_MAX) setYear(year);
+    });
+    const current = annual.find((row) => row.year === state.year);
+    $("r2-current").textContent = current?.r2 === null || !current
+      ? "Selected year: insufficient data"
+      : `${state.year} · R² ${fmt(current.r2, 3)}`;
+    $("r2-insight").textContent = current?.r2 === null || !current
+      ? `Fewer than three usable observations are available for the selected region in ${state.year}.`
+      : `The simple linear GDP-only model explains ${fmt(current.r2 * 100, 1)}% of the cross-country CO₂/person variation in ${state.year} for ${state.region === ALL_REGION ? "all regions" : state.region} (R² = ${fmt(current.r2, 3)}, n = ${current.n}). A change in R² describes the annual fit; it does not identify a cause.`;
+    const correlations = annual.filter((row) => row.r2 !== null);
+    const first = correlations[0];
+    const last = correlations.at(-1);
+    $("finding-summary").textContent = first && last
+      ? `From ${first.year} to ${last.year}, the annual GDP-only R² ${last.r2 >= first.r2 ? "rose" : "fell"} from ${fmt(first.r2, 2)} to ${fmt(last.r2, 2)} for the selected region. In ${state.year}, ${current?.n || 0} matched countries have an R² of ${current?.r2 === null || !current ? "n/a" : fmt(current.r2, 2)}. Annual country coverage can vary.`
+      : "There are not enough annual observations to summarize the selected region.";
+  }
+
+  function renderAll() {
+    if (!plotly()) {
+      setStatus("The local Plotly library did not load. Check assets/plotly.min.js.", "error");
+      return;
+    }
+    updateKpis();
+    renderMap();
+    renderGlobalScatter();
+    renderMatrix();
+    renderQuadrant();
+    renderTrajectory();
+    renderAnnual();
+    renderStructure();
+    renderR2();
+  }
+
+  function setFocusCountry(iso) {
+    if (!countryByIso.has(iso) || state.focusIso === iso) return;
+    state.focusIso = iso;
+    $("country-select").value = iso;
+    renderAll();
+  }
+
+  function setYear(year) {
+    const clamped = Math.max(YEAR_MIN, Math.min(YEAR_MAX, Number(year)));
+    if (!Number.isInteger(clamped) || clamped === state.year) return;
+    state.year = clamped;
+    $("year-range").value = String(clamped);
+    renderAll();
+  }
+
+  function loadWorldMap() {
+    return fetchText("assets/world-map.svg").then((svg) => {
+      $("world-map").innerHTML = svg;
+      const paths = $("world-map").querySelectorAll(".map-country");
+      if (!paths.length) throw new Error("The offline SVG map contains no country boundaries.");
+    });
+  }
+
+  function attachControls() {
+    $("year-range").addEventListener("input", (event) => setYear(Number(event.target.value)));
+    $("region-select").addEventListener("change", (event) => {
+      state.region = event.target.value;
+      state.matrixRegion = event.target.value;
+      $("matrix-region").value = state.matrixRegion;
+      renderAll();
+    });
+    $("matrix-region").addEventListener("change", (event) => {
+      state.matrixRegion = event.target.value;
+      renderMatrix();
+    });
+    $("matrix-sort").addEventListener("change", (event) => {
+      state.matrixSort = event.target.value;
+      renderMatrix();
+    });
+    $("country-select").addEventListener("change", (event) => setFocusCountry(event.target.value));
+    $("compare-select").addEventListener("change", (event) => {
+      state.compareIso = event.target.value;
+      renderAll();
+    });
+    $("log-gdp").addEventListener("change", (event) => {
+      state.logGdp = event.target.checked;
+      renderGlobalScatter();
+    });
+    $("trajectory-mode").addEventListener("change", (event) => {
+      state.trajectoryMode = event.target.value;
+      renderTrajectory();
+    });
+    $("structure-country").addEventListener("change", (event) => {
+      state.structureIso = event.target.value;
+      renderStructure();
+    });
+    $("export-country").addEventListener("click", exportFocusCountry);
+    $("reset-view").addEventListener("click", () => {
+      state.year = YEAR_MAX;
+      state.region = ALL_REGION;
+      state.matrixRegion = ALL_REGION;
+      state.focusIso = countryByIso.has("CHN") ? "CHN" : [...countryByIso.keys()][0];
+      state.compareIso = countryByIso.has("USA") ? "USA" : "";
+      state.windowYears = 20;
+      state.logGdp = false;
+      state.matrixSort = "co2-desc";
+      $("year-range").value = String(YEAR_MAX);
+      $("region-select").value = ALL_REGION;
+      $("matrix-region").value = ALL_REGION;
+      $("matrix-sort").value = "co2-desc";
+      $("log-gdp").checked = false;
+      $("trajectory-mode").value = "both";
+      $("country-select").value = state.focusIso;
+      $("compare-select").value = state.compareIso;
+      renderAll();
+    });
+    document.querySelectorAll(".window-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.windowYears = Number(button.dataset.window);
+        renderAll();
+      });
+    });
+    $("pathway-matrix").addEventListener("click", onMatrixInteraction);
+    $("pathway-matrix").addEventListener("keydown", onMatrixKeydown);
+    $("peer-table").addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-iso]");
+      if (row) setFocusCountry(row.dataset.iso);
+    });
+  }
+
+  function exportFocusCountry() {
+    const country = countryByIso.get(state.focusIso);
+    const countryRows = byIso.get(state.focusIso) || [];
+    if (!country || !countryRows.length) {
+      setStatus("The selected country has no matched rows to export.", "error");
+      return;
+    }
+    const columns = ["country", "iso3", "region", "year", "gdp_per_capita_2021_international_dollars", "co2_per_capita_tonnes"];
+    const escapeCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const csvRows = [columns.map(escapeCell).join(",")];
+    for (const row of countryRows) {
+      csvRows.push([
+        row.country, row.iso, row.region, row.year, row.gdp, row.co2,
+      ].map(escapeCell).join(","));
+    }
+    const blob = new Blob(["\uFEFF", csvRows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${country.country.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-gdp-co2.csv`;
+    link.style.position = "fixed";
+    link.style.left = "-10000px";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus(`CSV download started: ${country.country}, ${countryRows.length} matched country-year rows.`, "ready");
+  }
+
+  async function initialize() {
+    attachControls();
+    try {
+      const [gdpText, co2Text, structureText, energyText] = await Promise.all([
+        fetchText("data/gdp-per-capita-worldbank.csv"),
+        fetchText("data/co2-per-capita-marimekko.csv"),
+        fetchText("data/worldbank.csv"),
+        fetchText("data/owid-energy.csv"),
+        loadWorldMap(),
+      ]);
+      const gdpRows = parseCsv(gdpText);
+      const co2Rows = parseCsv(co2Text);
+      prepareRecords(gdpRows, co2Rows);
+      baselineGroups = quantileGroups();
+      prepareSectorRows(parseCsv(structureText));
+      prepareEnergyRows(parseCsv(energyText));
+      if (!records.length) throw new Error("No matching GDP and CO₂ records were found in the CSV files.");
+      updateCountryOptions();
+      populateStructureOptions();
+      renderAll();
+      const energyMatches = records.filter((row) => energyRecord(row.iso, row.year)?.energyPerCapitaKwh > 0).length;
+      setStatus(
+        `${records.length.toLocaleString()} GDP–CO₂ records; ${energyMatches.toLocaleString()} with energy data; ${sectorRows.size} matched countries with World Bank sector data.`,
+        "ready"
+      );
+    } catch (error) {
+      console.error("Could not initialize the Growth & Carbon dashboard:", error);
+      setStatus(`${error.message} Start the static server from the web/ folder (see README.md).`, "error");
+      $("pathway-matrix").innerHTML = `<div class="empty-state">The dashboard could not load its data. Start the local server from <code>group/web</code> and check the CSV files.</div>`;
+    }
+  }
+
+  initialize();
+})();

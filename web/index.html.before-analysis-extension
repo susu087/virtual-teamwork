@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta
+      name="description"
+      content="An interactive, data-led exploration of economic growth, carbon emissions, and country development pathways."
+    >
+    <title>Growth &amp; Carbon | COMP7507 Group 9</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="css/styles.css">
+    <script defer src="assets/plotly.min.js"></script>
+    <script defer src="js/app.js?v=2"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to analysis</a>
+    <header class="hero">
+      <div class="hero-orbit hero-orbit-one" aria-hidden="true"></div>
+      <div class="hero-orbit hero-orbit-two" aria-hidden="true"></div>
+      <div class="hero-inner">
+        <p class="eyebrow">COMP7507 · VISUAL ANALYTICS PROJECT · GROUP 9</p>
+        <h1>Does economic growth<br>always mean more carbon?</h1>
+        <p class="hero-intro">
+          Follow the evidence from global patterns to country comparisons. Compare economic
+          growth and territorial CO₂ emissions per person, then inspect the structural
+          indicators available in our data.
+        </p>
+        <div class="hero-facts" aria-label="Dataset summary">
+          <span><strong>20 years</strong> · 2005–2024</span>
+          <span><strong id="hero-country-count">—</strong> matched countries</span>
+          <span><strong>Five</strong> source datasets</span>
+        </div>
+        <a class="hero-cta" href="#overview">Explore the evidence <span aria-hidden="true">↓</span></a>
+      </div>
+    </header>
+
+    <nav class="chapter-nav" aria-label="Analysis chapters">
+      <a href="#overview"><span>01</span> Global overview</a>
+      <a href="#trajectories"><span>02</span> Compare countries</a>
+      <a href="#annual"><span>03</span> Annual change</a>
+      <a href="#structure"><span>04</span> Structural factors</a>
+      <a href="#evidence"><span>05</span> Evidence &amp; limits</a>
+    </nav>
+
+    <div id="data-status" class="data-status" role="status" aria-live="polite">
+      <span class="status-dot" aria-hidden="true"></span>
+      Loading the local CSV datasets…
+    </div>
+
+    <main id="main">
+      <section id="overview" class="chapter">
+        <div class="chapter-heading">
+          <span class="chapter-number">01</span>
+          <div>
+            <p class="eyebrow dark-eyebrow">THE GLOBAL PICTURE</p>
+            <h2>Economic output and carbon footprints vary widely</h2>
+            <p>Begin with where emissions occur and how GDP per person relates to CO₂ per person.</p>
+          </div>
+        </div>
+        <section class="control-deck" aria-labelledby="controls-title">
+          <div class="control-heading">
+            <div>
+              <p class="eyebrow dark-eyebrow">YOUR VIEW</p>
+              <h2 id="controls-title">Choose a year, region and country</h2>
+            </div>
+            <button id="reset-view" class="button button-light" type="button">Reset view</button>
+          </div>
+          <div class="controls-grid">
+            <div class="control control-year">
+              <label for="year-range">Snapshot year <output id="year-label" for="year-range">2024</output></label>
+              <input id="year-range" type="range" min="2005" max="2024" value="2024" step="1">
+              <div class="range-ends"><span>2005</span><span>2024</span></div>
+            </div>
+            <div class="control">
+              <label for="region-select">World region</label>
+              <select id="region-select">
+                <option value="All">All regions</option>
+                <option value="Africa">Africa</option>
+                <option value="Asia">Asia</option>
+                <option value="Europe">Europe</option>
+                <option value="North America">North America</option>
+                <option value="Oceania">Oceania</option>
+                <option value="South America">South America</option>
+              </select>
+            </div>
+            <div class="control">
+              <label for="country-select">Focus country</label>
+              <select id="country-select" aria-label="Focus country"></select>
+            </div>
+            <div class="control">
+              <label for="compare-select">Comparison country</label>
+              <select id="compare-select" aria-label="Comparison country">
+                <option value="">No comparison</option>
+              </select>
+            </div>
+          </div>
+          <div class="control-foot">
+            <div class="window-control" role="group" aria-label="Long-term analysis window">
+              <span>Long-term window</span>
+              <button type="button" class="window-button" data-window="10">10 years</button>
+              <button type="button" class="window-button" data-window="15">15 years</button>
+              <button type="button" class="window-button is-active" data-window="20">20 years</button>
+              <span class="window-caption" id="window-caption">2005–2024</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="summary-grid" aria-label="Selected-year summary">
+          <article class="summary-card">
+            <span class="summary-label">Countries in selected sample</span>
+            <strong id="kpi-count">—</strong>
+            <span class="summary-note" id="kpi-count-note">With both GDP and CO₂ values</span>
+          </article>
+          <article class="summary-card">
+            <span class="summary-label">GDP–CO₂ correlation</span>
+            <strong id="kpi-correlation">—</strong>
+            <span class="summary-note" id="kpi-correlation-note">Pearson correlation in selected year</span>
+          </article>
+          <article class="summary-card">
+            <span class="summary-label">Median CO₂ per person</span>
+            <strong id="kpi-co2">—</strong>
+            <span class="summary-note">Tonnes per person in selected year</span>
+          </article>
+          <article class="summary-card">
+            <span class="summary-label">Selected pathway</span>
+            <strong id="kpi-pathway">—</strong>
+            <span class="summary-note" id="kpi-pathway-note">Relative to the analysis-window start</span>
+          </article>
+        </section>
+
+        <div class="overview-grid">
+          <article class="panel map-panel">
+            <div class="panel-heading">
+              <div>
+                <h3>GDP per person</h3>
+                <p>PPP-adjusted · constant 2021 international dollars · <span id="map-gdp-year-label">2024</span></p>
+              </div>
+              <span class="chart-badge">Click a country to focus</span>
+            </div>
+            <div class="map-layout">
+              <div id="world-map-gdp" class="world-map" role="img" aria-label="World map coloured by GDP per person">
+                <div class="map-loading">Loading country boundaries…</div>
+              </div>
+              <div class="map-scale" aria-label="Map colour scale">
+                <span>Lower</span>
+                <div class="gradient-bar"></div>
+                <span>Higher</span>
+                <p>Independent scale · gray = no matched data</p>
+              </div>
+            </div>
+            <div class="panel-footnote" id="map-gdp-insight">Hover or focus a country to inspect its data.</div>
+          </article>
+          <article class="panel map-panel">
+            <div class="panel-heading">
+              <div>
+                <h3>CO₂ emissions per person</h3>
+                <p>Territorial fossil-fuel and industrial CO₂ · tonnes per person · <span id="map-co2-year-label">2024</span></p>
+              </div>
+              <span class="chart-badge">Click a country to focus</span>
+            </div>
+            <div class="map-layout">
+              <div id="world-map-co2" class="world-map" role="img" aria-label="World map coloured by CO₂ emissions per person">
+                <div class="map-loading">Loading country boundaries…</div>
+              </div>
+              <div class="map-scale" aria-label="Map colour scale">
+                <span>Lower</span>
+                <div class="gradient-bar"></div>
+                <span>Higher</span>
+                <p>Independent scale · gray = no matched data</p>
+              </div>
+            </div>
+            <div class="panel-footnote" id="map-co2-insight">Hover or focus a country to inspect its data.</div>
+          </article>
+          <article class="panel group-trend-panel">
+            <div class="panel-heading">
+              <div>
+                <h3>GDP and CO₂ trends by income group</h3>
+                <p>Per-person index · 2005 = 100 · 2005–2024</p>
+              </div>
+              <span class="chart-badge" id="income-trend-count">— countries</span>
+            </div>
+            <div class="trend-legend" aria-label="Income group legend">
+              <span><i class="trend-swatch trend-high"></i>Developed · high income</span>
+              <span><i class="trend-swatch trend-other"></i>Developing · low / middle income</span>
+              <span><i class="trend-swatch trend-focus"></i><span id="focus-trend-country">Focus country</span></span>
+              <span class="trend-legend-note">Line: median · band: middle 50%</span>
+            </div>
+            <div class="group-trend-grid">
+              <section class="group-trend-chart-panel" aria-labelledby="gdp-trend-title">
+                <h4 id="gdp-trend-title">GDP per person</h4>
+                <div id="gdp-group-trend" class="group-trend-chart" role="img" aria-label="Indexed GDP per person trends for income groups and the focused country"></div>
+              </section>
+              <section class="group-trend-chart-panel" aria-labelledby="co2-trend-title">
+                <h4 id="co2-trend-title">CO₂ per person</h4>
+                <div id="co2-group-trend" class="group-trend-chart" role="img" aria-label="Indexed CO2 per person trends for income groups and the focused country"></div>
+              </section>
+            </div>
+            <div class="panel-footnote" id="income-trend-insight"></div>
+          </article>
+          <article class="panel global-scatter-panel">
+            <div class="panel-heading global-scatter-heading">
+              <div>
+                <h3>GDP vs CO₂ · one dot per country</h3>
+                <p>GDP/person (x) vs CO₂/person (y) · global linear fit · <span id="scatter-year-label">2024</span></p>
+              </div>
+              <div class="scatter-controls">
+                <label class="select-label" for="scatter-income-filter">Income group
+                  <select id="scatter-income-filter">
+                    <option value="all">All countries</option>
+                    <option value="developed">Developed · high income</option>
+                    <option value="developing">Developing · low / middle income</option>
+                  </select>
+                </label>
+                <label class="check-control" for="scatter-log-gdp">
+                  <input id="scatter-log-gdp" type="checkbox">
+                  Log GDP axis
+                </label>
+              </div>
+            </div>
+            <div id="global-scatter-chart" class="global-scatter-chart" role="img" aria-label="GDP per person versus CO₂ emissions per person by country"></div>
+            <div class="panel-footnote" id="global-scatter-insight"></div>
+          </article>
+        </div>
+        <div class="story-strip">
+          <strong>Focus country in green</strong>
+          <p>Click a country on the map to add its GDP/person and CO₂/person trends to both charts. All series start at 100 in 2005; these comparisons describe trends, not causes.</p>
+        </div>
+      </section>
+
+      <section id="trajectories" class="chapter">
+        <div class="chapter-heading">
+          <span class="chapter-number">02</span>
+          <div>
+            <p class="eyebrow dark-eyebrow">COUNTRY CASE STUDIES</p>
+            <h2>Compare development pathways on a shared scale</h2>
+            <p>Rebase both measures to 100 at the start of the selected window, then compare a focus country with one peer.</p>
+          </div>
+        </div>
+        <div class="overview-grid">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3 id="trajectory-title">GDP &amp; CO₂ index</h3>
+                <p>Baseline = 100 · selected window <span id="trajectory-window-label">2005–2024</span></p>
+              </div>
+              <div class="heading-actions">
+                <button id="export-country" class="button button-light" type="button">Export country CSV</button>
+                <label class="select-label" for="trajectory-mode">Measure
+                  <select id="trajectory-mode">
+                    <option value="both">GDP and CO₂</option>
+                    <option value="gdp">GDP per person</option>
+                    <option value="co2">CO₂ per person</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div id="trajectory-chart" class="chart chart-tall" role="img" aria-label="Indexed GDP and CO2 trajectories for selected countries"></div>
+            <div class="panel-footnote" id="trajectory-insight"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>GDP-matched peers</h3>
+                <p>Countries with GDP per person within 10% of the focus country</p>
+              </div>
+            </div>
+            <div class="peer-summary" id="peer-summary"></div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>Country</th><th>GDP / person</th><th>CO₂ / person</th><th>CO₂ gap</th></tr></thead>
+                <tbody id="peer-table"><tr><td colspan="4" class="table-empty">Select a focus country.</td></tr></tbody>
+              </table>
+            </div>
+            <div class="panel-footnote">Peer matching is a descriptive rule, not a causal or like-for-like evaluation. Country size, industrial structure, trade and energy systems also differ.</div>
+          </article>
+        </div>
+        <div class="story-strip">
+          <strong>Index, not absolute values</strong>
+          <p>An index of 120 means the indicator is 20% above its own baseline. GDP and CO₂ indices can share an axis because both are normalized; their absolute units are different.</p>
+        </div>
+      </section>
+
+      <section id="annual" class="chapter">
+        <div class="chapter-heading">
+          <span class="chapter-number">03</span>
+          <div>
+            <p class="eyebrow dark-eyebrow">SHORT-TERM TURNING POINTS</p>
+            <h2>Annual growth can move differently from the long-run trend</h2>
+            <p>Year-over-year (YoY) changes compare each observation with the previous year. The first year in the selected window has no in-window predecessor.</p>
+          </div>
+        </div>
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <h3>Annual GDP &amp; CO₂ change</h3>
+              <p>Percentage change from the prior year · focus is solid, comparison is dashed</p>
+            </div>
+            <span class="formula-chip">YoY % = 100 × (this year ÷ last year − 1)</span>
+          </div>
+          <div id="annual-chart" class="chart chart-wide" role="img" aria-label="Year-over-year GDP and CO2 changes for selected countries"></div>
+          <div class="panel-footnote" id="annual-insight"></div>
+        </article>
+        <div class="three-notes">
+          <article><span>01</span><strong>The zero line matters</strong><p>Above zero means the per-person measure increased from the previous year; below zero means it decreased.</p></article>
+          <article><span>02</span><strong>A falling growth rate can stay positive</strong><p>A change slowing from +8% to +3% is still an increase. It is not a decline until the YoY value turns negative.</p></article>
+          <article><span>03</span><strong>Use both time scales</strong><p>Annual emissions can rebound while remaining below the long-term baseline. Compare this chart with the indexed trajectory.</p></article>
+        </div>
+      </section>
+
+      <section id="structure" class="chapter">
+        <div class="chapter-heading">
+          <span class="chapter-number">04</span>
+          <div>
+            <p class="eyebrow dark-eyebrow">ENERGY AND STRUCTURE</p>
+            <h2>Energy use and its sources help describe emissions pathways</h2>
+            <p>Compare energy mixes and economic structure for two countries, then see how GDP, energy intensity and carbon intensity add up in the Kaya decomposition.</p>
+          </div>
+        </div>
+        <article class="panel structural-comparison">
+          <div class="panel-heading">
+            <div>
+              <h3>1. Compare energy mix</h3>
+              <p>100% stacked shares of energy supply · 2005–2024</p>
+            </div>
+            <div class="heading-actions">
+              <label class="select-label" for="structure-country-a">Country A
+                <select id="structure-country-a"></select>
+              </label>
+              <label class="select-label" for="structure-country-b">Country B
+                <select id="structure-country-b"></select>
+              </label>
+            </div>
+          </div>
+          <div class="comparison-columns">
+            <section class="comparison-column">
+              <span class="country-pill" id="energy-mix-country-a">China</span>
+              <div id="energy-mix-chart-a" class="chart comparison-chart" role="img" aria-label="100 percent stacked bars showing energy source shares for country A"></div>
+              <div class="panel-footnote" id="energy-mix-insight-a"></div>
+            </section>
+            <section class="comparison-column">
+              <span class="country-pill" id="energy-mix-country-b">United States</span>
+              <div id="energy-mix-chart-b" class="chart comparison-chart" role="img" aria-label="100 percent stacked bars showing energy source shares for country B"></div>
+              <div class="panel-footnote" id="energy-mix-insight-b"></div>
+            </section>
+          </div>
+        </article>
+        <article class="panel structural-comparison">
+          <div class="panel-heading">
+            <div>
+              <h3>2. Compare economic structure</h3>
+              <p>100% stacked agriculture, industry and services mix · World Bank</p>
+            </div>
+          </div>
+          <div class="comparison-columns">
+            <section class="comparison-column">
+              <span class="country-pill" id="sector-country-a">China</span>
+              <div id="sector-chart-a" class="chart comparison-chart" role="img" aria-label="100 percent stacked bars showing normalized agriculture, industry and services shares for country A"></div>
+              <div class="panel-footnote" id="sector-insight-a"></div>
+            </section>
+            <section class="comparison-column">
+              <span class="country-pill" id="sector-country-b">United States</span>
+              <div id="sector-chart-b" class="chart comparison-chart" role="img" aria-label="100 percent stacked bars showing normalized agriculture, industry and services shares for country B"></div>
+              <div class="panel-footnote" id="sector-insight-b"></div>
+            </section>
+          </div>
+        </article>
+        <article class="panel structural-comparison kaya-comparison">
+          <div class="panel-heading">
+            <div>
+              <h3>3. How do these factors add up?</h3>
+              <p>Compare the selected countries · cumulative log change since <span id="kaya-start-label">2005</span></p>
+            </div>
+            <span class="chart-badge">GDP × energy intensity × carbon intensity</span>
+          </div>
+          <div class="comparison-columns">
+            <section class="comparison-column">
+              <span class="country-pill" id="kaya-country-a">China</span>
+              <div id="kaya-chart-a" class="chart kaya-chart" role="img" aria-label="Kaya decomposition for country A"></div>
+              <div class="panel-footnote" id="kaya-insight-a"></div>
+            </section>
+            <section class="comparison-column">
+              <span class="country-pill" id="kaya-country-b">United States</span>
+              <div id="kaya-chart-b" class="chart kaya-chart" role="img" aria-label="Kaya decomposition for country B"></div>
+              <div class="panel-footnote" id="kaya-insight-b"></div>
+            </section>
+          </div>
+          <div class="identity-formula"><code>CO₂/person = GDP/person × energy/GDP × CO₂/energy</code></div>
+        </article>
+        <article class="panel interpretation-panel kaya-interpretation">
+          <div class="panel-heading">
+            <div><h3>How to read the components</h3><p>Log changes add across the three factors.</p></div>
+          </div>
+          <div class="kaya-steps">
+            <div><span>1</span><p><strong>Activity:</strong> GDP per person</p></div>
+            <div><span>2</span><p><strong>Energy intensity:</strong> total energy supply per unit GDP</p></div>
+            <div><span>3</span><p><strong>Carbon intensity:</strong> territorial CO₂ per unit energy supply</p></div>
+          </div>
+          <div class="caveat-box">GDP per person is PPP-adjusted; energy supply is from OWID; CO₂ covers territorial fossil-fuel and industrial emissions. This mixed-source accounting decomposition is descriptive, not causal.</div>
+        </article>
+      </section>
+
+      <section id="evidence" class="chapter">
+        <div class="chapter-heading">
+          <span class="chapter-number">05</span>
+          <div>
+            <p class="eyebrow dark-eyebrow">TEST THE GLOBAL PATTERN</p>
+            <h2>How strong is the annual GDP–CO₂ relationship?</h2>
+            <p>Each point shows a separate cross-country regression for one year and the selected region.</p>
+          </div>
+        </div>
+        <div class="overview-grid">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Annual linear-model R²</h3>
+                <p>GDP per person as the sole predictor of CO₂ per person</p>
+              </div>
+              <span class="chart-badge" id="r2-current">Selected year: —</span>
+            </div>
+            <div id="r2-chart" class="chart chart-tall" role="img" aria-label="Annual R squared for cross-country GDP versus CO2 regressions"></div>
+            <div class="panel-footnote" id="r2-insight"></div>
+          </article>
+          <article class="panel findings-panel">
+            <div class="panel-heading"><div><h3>Read the evidence carefully</h3><p>What this analysis can and cannot tell us</p></div></div>
+            <div class="finding-block">
+              <span class="finding-label">DESCRIPTIVE RESULT</span>
+              <p id="finding-summary">Loading the matched country-year dataset…</p>
+            </div>
+            <div class="finding-block">
+              <span class="finding-label">INTERPRETATION GUARDRAILS</span>
+              <ul>
+                <li>R² describes the fit of a simple linear relationship in one cross-section; it is not a causal estimate.</li>
+                <li>Country coverage, influential observations, inequality within countries and model form affect results.</li>
+                <li>These are per-person territorial CO₂ measures; consumption-based emissions and land-use change are outside scope.</li>
+                <li>Observed differences motivate further investigation; they do not prove a specific structural mechanism.</li>
+              </ul>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="methods-panel" aria-labelledby="methods-title">
+        <details>
+          <summary id="methods-title">Data, definitions &amp; methodology</summary>
+          <div class="methods-content">
+            <div>
+              <h3>Sources</h3>
+              <p>World Bank and Our World in Data GDP per capita (PPP), Our World in Data / Global Carbon Budget territorial CO₂ per capita, OWID energy supply and mix, and World Bank World Development Indicators sector value-added shares. Dataset notes and citations are in <code>data/SOURCES.md</code>.</p>
+            </div>
+            <div>
+              <h3>Country sample</h3>
+              <p>GDP and CO₂ records are joined on ISO-3 code and year. Aggregate OWID rows are excluded from country-level models. Charts use only rows with both values; the displayed sample size can therefore vary by year.</p>
+            </div>
+            <div>
+              <h3>Comparison groups</h3>
+              <p>For a descriptive group contrast, “lower” and “higher baseline GDP” are the bottom and top deciles of countries with 2005 GDP data. This is a transparent income-level proxy—not a World Bank income classification or a definitive developed/developing label.</p>
+            </div>
+            <div>
+              <h3>Derived measures</h3>
+              <p>Index = 100 × value in year ÷ value in baseline year. YoY (%) = 100 × (value in year ÷ value in prior year − 1). GDP–CO₂ R² is computed from an ordinary least-squares line with intercept. CO₂ intensity = CO₂ per person ÷ GDP per person.</p>
+            </div>
+            <div>
+              <h3>Limits</h3>
+              <p>Territorial fossil/industrial CO₂ excludes land-use change and emissions embodied in imports. PPP GDP is in constant international dollars. Missing observations are not imputed. Correlation is not causation.</p>
+            </div>
+          </div>
+        </details>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>COMP7507 · Visual Analytics Project · Group 9</span>
+      <a href="#main">Back to the analysis ↑</a>
+    </footer>
+    <div id="tooltip" class="map-tooltip" role="status" aria-live="polite"></div>
+  </body>
+</html>
