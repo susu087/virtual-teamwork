@@ -10,9 +10,9 @@
     >
     <title>Growth &amp; Carbon | COMP7507 Group 9</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/styles.css?v=20261107-2">
     <script defer src="assets/plotly.min.js"></script>
-    <script defer src="js/analysis-extension.js?v=1"></script><script defer src="js/group-overview.js?v=1"></script><script defer src="js/app.js?v=3"></script>
+    <script defer src="js/analysis-extension.js?v=20261107-tooltip-3"></script><script defer src="js/group-overview.js?v=20261108-clean-6"></script><script defer src="js/app.js?v=20261108-clean-6"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to analysis</a>
@@ -32,7 +32,6 @@
           <span><strong id="hero-country-count">—</strong> matched countries</span>
           <span><strong>Five</strong> source datasets</span>
         </div>
-        <a class="hero-cta" href="#overview">Explore the evidence <span aria-hidden="true">↓</span></a>
       </div>
     </header>
 
@@ -41,11 +40,6 @@
       <a href="#trajectories"><span>02</span> Compare countries</a>
       <a href="#structure"><span>04</span> Structural factors</a>
     </nav>
-
-    <div id="data-status" class="data-status" role="status" aria-live="polite">
-      <span class="status-dot" aria-hidden="true"></span>
-      Loading the local CSV datasets…
-    </div>
 
     <main id="main">
       <section id="overview" class="chapter">
@@ -61,10 +55,12 @@
           <div class="control-heading">
             <div>
               <p class="eyebrow dark-eyebrow">YOUR VIEW</p>
-              <h2 id="controls-title">Choose a year, region and country</h2>
+              <h2 id="controls-title">Choose a development group</h2>
             </div>
             <button id="reset-view" class="button button-light" type="button">Reset view</button>
           </div>
+          <div class="control" style="max-width:480px"><label for="development-select">Development group</label><select id="development-select"><option value="all">All classified economies</option><option value="Developed">Developed economies</option><option value="Developing">Developing economies</option></select></div>
+          <div hidden aria-hidden="true">
           <div class="controls-grid">
             <div class="control control-year">
               <label for="year-range">Snapshot year <output id="year-label" for="year-range">2024</output></label>
@@ -103,32 +99,10 @@
               <span class="window-caption" id="window-caption">2005–2024</span>
             </div>
           </div>
+          </div>
         </section>
 
-        <section class="summary-grid" aria-label="Selected-year summary">
-          <article class="summary-card">
-            <span class="summary-label">Countries in selected sample</span>
-            <strong id="kpi-count">—</strong>
-            <span class="summary-note" id="kpi-count-note">With both GDP and CO₂ values</span>
-          </article>
-          <article class="summary-card">
-            <span class="summary-label">GDP–CO₂ correlation</span>
-            <strong id="kpi-correlation">—</strong>
-            <span class="summary-note" id="kpi-correlation-note">Pearson correlation in selected year</span>
-          </article>
-          <article class="summary-card">
-            <span class="summary-label">Median CO₂ per person</span>
-            <strong id="kpi-co2">—</strong>
-            <span class="summary-note">Tonnes per person in selected year</span>
-          </article>
-          <article class="summary-card">
-            <span class="summary-label">Selected pathway</span>
-            <strong id="kpi-pathway">—</strong>
-            <span class="summary-note" id="kpi-pathway-note">Relative to the analysis-window start</span>
-          </article>
-        </section>
-
-        <div class="overview-grid">
+<div class="overview-grid">
           <article class="panel map-panel">
             <div class="panel-heading">
               <div>
@@ -211,7 +185,7 @@
                 <p>Keep country A fixed; choose a GDP-matched country as B.</p>
               </div>
             </div>
-            <div class="inline-controls" style="padding:12px;flex-wrap:wrap"><label>Development group <select id="peer-group"><option value="all">All classified economies</option><option value="Developed">Developed economies</option><option value="Developing">Developing economies</option></select></label></div><div class="peer-summary" id="peer-summary"></div><div class="panel-footnote" id="pair-summary" aria-live="polite"></div>
+            <div class="inline-controls" style="padding:12px;flex-wrap:wrap"><label>Development group <select id="peer-group"><option value="all">All classified economies</option><option value="Developed">Developed economies</option><option value="Developing">Developing economies</option></select></label></div>
             <div class="table-wrap">
               <table class="data-table">
                 <thead><tr><th>Country</th><th>GDP / person</th><th>CO₂ / person</th><th>GDP difference</th><th>CO₂ gap (t/person)</th><th>Action</th></tr></thead>
@@ -220,10 +194,6 @@
             </div>
             <div class="panel-footnote">Peer matching is a descriptive rule, not a causal or like-for-like evaluation. Country size, industrial structure, trade and energy systems also differ.</div>
           </article>
-        </div>
-        <div class="story-strip">
-          <strong>Index, not absolute values</strong>
-          <p>An index of 120 means the indicator is 20% above its own baseline. GDP and CO₂ indices can share an axis because both are normalized; their absolute units are different.</p>
         </div>
       </section>
 
@@ -306,45 +276,6 @@
           </div>
           <div class="identity-formula"><code>CO₂/person = GDP/person × energy/GDP × CO₂/energy</code></div>
         </article>
-        <article class="panel interpretation-panel kaya-interpretation">
-          <div class="panel-heading">
-            <div><h3>How to read the components</h3><p>Log changes add across the three factors.</p></div>
-          </div>
-          <div class="kaya-steps">
-            <div><span>1</span><p><strong>Activity:</strong> GDP per person</p></div>
-            <div><span>2</span><p><strong>Energy intensity:</strong> total energy supply per unit GDP</p></div>
-            <div><span>3</span><p><strong>Carbon intensity:</strong> territorial CO₂ per unit energy supply</p></div>
-          </div>
-          <div class="caveat-box">GDP per person is PPP-adjusted; energy supply is from OWID; CO₂ covers territorial fossil-fuel and industrial emissions. This mixed-source accounting decomposition is descriptive, not causal.</div>
-        </article>
-      </section>
-
-      <section class="methods-panel" aria-labelledby="methods-title">
-        <details>
-          <summary id="methods-title">Data, definitions &amp; methodology</summary>
-          <div class="methods-content">
-            <div>
-              <h3>Sources</h3>
-              <p>World Bank and Our World in Data GDP per capita (PPP), Our World in Data / Global Carbon Budget territorial CO₂ per capita, OWID energy supply and mix, and World Bank World Development Indicators sector value-added shares. Dataset notes and citations are in <code>data/SOURCES.md</code>.</p>
-            </div>
-            <div>
-              <h3>Country sample</h3>
-              <p>GDP and CO₂ records are joined on ISO-3 code and year. Aggregate OWID rows are excluded from country-level models. Charts use only rows with both values; the displayed sample size can therefore vary by year.</p>
-            </div>
-            <div>
-              <h3>Comparison groups</h3>
-              <p>All development-group comparisons use IMF WEO October 2024: advanced economies (Developed) versus emerging market and developing economies (Developing). The classification is fixed across years. Unclassified economies remain available in global views but are excluded from both development groups.</p>
-            </div>
-            <div>
-              <h3>Derived measures</h3>
-              <p>Index = 100 × value in year ÷ value in baseline year. YoY (%) = 100 × (value in year ÷ value in prior year − 1). CO₂ intensity = CO₂ per person ÷ GDP per person.</p>
-            </div>
-            <div>
-              <h3>Limits</h3>
-              <p>Territorial fossil/industrial CO₂ excludes land-use change and emissions embodied in imports. PPP GDP is in constant international dollars. Missing observations are not imputed. Correlation is not causation.</p>
-            </div>
-          </div>
-        </details>
       </section>
     </main>
 

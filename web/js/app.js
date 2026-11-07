@@ -27,6 +27,7 @@
   };
 
   const state = {
+    developmentGroup: "all",
     year: YEAR_MAX,
     region: ALL_REGION,
     focusIso: "CHN",
@@ -106,6 +107,7 @@
 
   function setStatus(message, kind = "") {
     const status = $("data-status");
+    if (!status) return;
     status.classList.toggle("is-ready", kind === "ready");
     status.classList.toggle("is-error", kind === "error");
     status.lastChild.textContent = ` ${message}`;
@@ -204,7 +206,7 @@
 
   function selectedRows(year = state.year) {
     return records.filter((row) =>
-      row.year === Number(year) && (state.region === ALL_REGION || row.region === state.region)
+      row.year === Number(year) && (state.region === ALL_REGION || row.region === state.region) && incomeGroupByIso.has(row.iso) && (state.developmentGroup === "all" || incomeGroupByIso.get(row.iso) === state.developmentGroup)
     );
   }
 
@@ -491,11 +493,9 @@
     const a = countryRecord(state.focusIso,state.year), b = countryRecord(state.compareIso,state.year), tbody = $('peer-table');
     const diff = (x,y) => 100*Math.abs(x-y)/((x+y)/2);
     const {start,end}=windowBounds();
-    $('pair-summary').textContent = a && b ? `${a.country} (A) vs ${b.country} (B) · matched year: ${state.year} · GDP difference: ${fmt(diff(a.gdp,b.gdp),1)}% · CO₂ gap B−A: ${fmt(b.co2-a.co2,1)} t/person · ${diff(a.gdp,b.gdp)<=state.peerTolerance*100?'Within':'Outside'} selected GDP tolerance. Historical view: ${start}–${end}, own-country baseline = 100. Matching in one year does not imply comparable incomes throughout the period.` : `Choose A and B with data in ${state.year}. Historical view: ${start}–${end}.`;
-    if(!a){tbody.innerHTML='<tr><td colspan="6">No matched observations for A in this year.</td></tr>'; $('peer-summary').textContent='Change country A or the snapshot year.';return;}
+    if(!a){tbody.innerHTML='<tr><td colspan="6">No matched observations for A in this year.</td></tr>';return;}
     const peers=selectedRows().filter(r=>r.iso!==a.iso&&r.gdp>0&&incomeGroupByIso.has(r.iso)&&(state.peerGroup==='all'||incomeGroupByIso.get(r.iso)===state.peerGroup)&&diff(a.gdp,r.gdp)<=state.peerTolerance*100).map(r=>({...r,gdpGap:diff(a.gdp,r.gdp),gap:r.co2-a.co2}));
     peers.sort((x,y)=>(state.peerSort==='gap'?Math.abs(y.gap)-Math.abs(x.gap):x.gdpGap-y.gdpGap)||x.country.localeCompare(y.country));
-    $('peer-summary').textContent=`A: ${a.country} · ${state.year} · ${state.region} · ${state.peerGroup==='all'?'All classified economies':state.peerGroup+' economies'} · ${peers.length} candidates within ±${state.peerTolerance*100}% symmetric GDP difference. Select a button to set B; A stays fixed.`;
     tbody.innerHTML=peers.length?peers.map(r=>`<tr><td>${escapeHtml(r.country)}</td><td>$${fmtCompact(r.gdp)}</td><td>${fmt(r.co2,1)} t</td><td>${fmt(r.gdpGap,1)}%</td><td>${fmt(r.gap,1)} t</td><td><button type="button" class="window-button" data-compare-iso="${r.iso}">${r.iso===state.compareIso?'Selected as B':'Compare as B'}</button></td></tr>`).join(''):'<tr><td colspan="6">No candidates. No GDP-matched candidates within the fixed ±10% range. Change development group, region or year. Country B is not replaced automatically.</td></tr>';
   }
 
@@ -732,7 +732,7 @@
       setStatus("The local Plotly library did not load. Check assets/plotly.min.js.", "error");
       return;
     }
-    updateKpis();
+
     renderMap();
     
     
@@ -778,6 +778,7 @@
   }
 
   function attachControls() {
+    $("development-select").addEventListener("change", event => {state.developmentGroup=event.target.value;renderAll();});
     $("year-range").addEventListener("input", (event) => setYear(Number(event.target.value)));
     $("region-select").addEventListener("change", (event) => {
       state.region = event.target.value;
@@ -808,6 +809,8 @@
     });
     $("export-country").addEventListener("click", exportFocusCountry);
     $("reset-view").addEventListener("click", () => {
+      state.developmentGroup = "all";
+      $("development-select").value = "all";
       state.year = YEAR_MAX;
       state.region = ALL_REGION;
       state.focusIso = countryByIso.has("CHN") ? "CHN" : [...countryByIso.keys()][0];
